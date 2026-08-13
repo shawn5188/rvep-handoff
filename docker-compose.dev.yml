@@ -1,0 +1,87 @@
+version: "3.9"
+
+# Remote Vehicle Edge Control Platform — local development services.
+# All secrets are read from .env (copy from .env.example).
+# Run: docker compose -f docker-compose.dev.yml up -d
+
+networks:
+  rvep-dev:
+    driver: bridge
+
+volumes:
+  postgres-data:
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - rvep-dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # LiveKit SFU
+  # ---------------------------------------------------------------------------
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    command: --config /etc/livekit/livekit.yaml
+    environment:
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+    ports:
+      - "7880:7880"                       # WebSocket / HTTP
+      - "7881:7881/tcp"                   # RTC TCP fallback
+      - "50000-50100:50000-50100/udp"     # RTC ICE UDP (narrow range)
+    volumes:
+      - ./livekit.yaml:/etc/livekit/livekit.yaml:ro
+    networks:
+      - rvep-dev
+
+  # ---------------------------------------------------------------------------
+  # coturn TURN / STUN server
+  # ---------------------------------------------------------------------------
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host   # coturn requires host networking for UDP relay
+    environment:
+      TURN_USERNAME: ${COTURN_USERNAME}
+      TURN_PASSWORD: ${COTURN_PASSWORD}
+      TURN_REALM: ${COTURN_REALM}
+    command: >
+      -n
+      --log-file=stdout
+      --lt-cred-mech
+      --user=${COTURN_USERNAME}:${COTURN_PASSWORD}
+      --realm=${COTURN_REALM}
+      --no-tls
+      --no-dtls
+
+  # ---------------------------------------------------------------------------
+  # Eclipse Mosquitto MQTT broker
+  # ---------------------------------------------------------------------------
+  mqtt:
+    image: eclipse-mosquitto:latest
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    networks:
+      - rvep-dev

@@ -5,6 +5,7 @@ import {
   useCockpitStore,
   type CockpitMode,
 } from "@/lib/stores/cockpit-store";
+import { useHydrated } from "@/lib/hooks/useHydrated";
 
 const MODES: { id: CockpitMode; label: string; key: string; hint: string }[] = [
   { id: "immersive", label: "Immersive", key: "1", hint: "全螢幕影像，最少干擾" },
@@ -25,8 +26,11 @@ interface Props {
  * Keyboard: 1 / 2 / 3 jump to Immersive / Standard / Mission.
  */
 export function CockpitModeSwitcher({ shortcutsEnabled = true }: Props) {
+  const hydrated = useHydrated();
   const mode = useCockpitStore((s) => s.mode);
   const setMode = useCockpitStore((s) => s.setMode);
+  // Use SSR-stable default until Zustand persist rehydrates from localStorage.
+  const safeMode: CockpitMode = hydrated ? mode : "standard";
 
   useEffect(() => {
     if (!shortcutsEnabled) return;
@@ -61,7 +65,7 @@ export function CockpitModeSwitcher({ shortcutsEnabled = true }: Props) {
       className="inline-flex items-center rounded-full border border-[var(--border-subtle)] bg-black/40 backdrop-blur px-0.5 py-0.5 gap-0.5"
     >
       {MODES.map((m) => {
-        const selected = mode === m.id;
+        const selected = safeMode === m.id;
         return (
           <button
             key={m.id}

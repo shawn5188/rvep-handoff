@@ -47,12 +47,16 @@ export const viewport: Viewport = {
   userScalable: false,
   viewportFit: "cover",
   themeColor: "#050505",
+  // Prevent on-screen keyboard from shrinking the visual viewport and pushing UI.
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-Hant" className={inter.variable}>
-      <body className="min-h-dvh antialiased">{children}</body>
+      <body className="min-h-dvh antialiased overscroll-none touch-manipulation">
+        {children}
+      </body>
     </html>
   );
 }

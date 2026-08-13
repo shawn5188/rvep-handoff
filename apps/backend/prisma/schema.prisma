@@ -81,6 +81,13 @@ enum RetentionTier {
   PERMANENT
 }
 
+// c15 P1 — EventLog category for audit vs telemetry vs system events
+enum EventLogCategory {
+  AUDIT
+  TELEMETRY
+  SYSTEM
+}
+
 // ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------
@@ -95,6 +102,14 @@ model User {
   failedLoginCount    Int       @default(0)
   lockedUntil         DateTime?
   refreshTokenVersion Int       @default(0)
+  // c15 P1 additions (2026-06-07) — Admin Onboarding Suite
+  displayName         String?
+  invitePending       Boolean   @default(false)
+  inviteToken         String?   @unique
+  inviteExpiresAt     DateTime?
+  twoFactorEnabled    Boolean   @default(false)
+  twoFactorSecret     String?   // AES-256-GCM encrypted at-rest (per P1 §6 fork 6)
+  archivedAt          DateTime?
 
   sessions           Session[]
   controlLeases      ControlLease[]
@@ -111,10 +126,20 @@ model Vehicle {
   platformId      String
   cameraProfileId String
   audioProfileId  String
+  /// DEPRECATED 2026-06-07 — use declaredCapabilities + observedCapabilities; sunset target 2026-12-06 (v2.5)
   capabilities    Json
   status          VehicleStatus @default(OFFLINE)
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
+  // c15 P1 additions (2026-06-07) — Admin Onboarding Suite
+  vendor               String?
+  serialNumber         String?
+  declaredCapabilities String[]      @default([])
+  observedCapabilities String[]      @default([])
+  maxLinearMs          Float         @default(0.5)
+  maxAngularRads       Float         @default(1.0)
+  createdBy            String?
+  archivedAt           DateTime?
 
   sessions             Session[]
   controlLeases        ControlLease[]
@@ -134,6 +159,8 @@ model VehiclePermission {
   grantedBy String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  // c15 P1 + c14 (2026-06-07) — priority override for pre-emption (null = use role default)
+  priorityOverride Int?
 
   user    User    @relation("UserPermissions", fields: [userId], references: [id])
   vehicle Vehicle @relation(fields: [vehicleId], references: [id])
@@ -213,9 +240,19 @@ model EventLog {
   eventName String
   ts        DateTime @default(now())
   payload   Json?
+  // c15 P1 additions (2026-06-07) — upgrade to audit-capable log
+  category   EventLogCategory? // null for legacy rows; new rows must set
+  actorId    String?           // who triggered (usually = userId, distinct for system events)
+  targetType String?           // 'User' / 'Vehicle' / 'Lease' / 'Permission'
+  targetId   String?
+  tenantId   String?           // multi-tenant ready (null = single-tenant)
 
   @@index([vehicleId, ts])
   @@index([eventName, ts])
+  @@index([actorId, ts])
+  @@index([targetType, targetId, ts])
+  @@index([tenantId, ts])
+  @@index([category, ts])
 }
 
 model NetworkLog {

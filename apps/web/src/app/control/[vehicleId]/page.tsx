@@ -12,24 +12,28 @@ import {
   ConnectionState,
 } from "livekit-client";
 import { getLivekitToken, ApiError } from "@/lib/api-client";
-import { ControlChannel } from "@/lib/control-channel";
+import { ControlChannel, type ControlStats } from "@/lib/control-channel";
 import { useWakeLock } from "@/lib/hooks/useWakeLock";
 import { usePageVisibilitySafeStop } from "@/lib/hooks/usePageVisibilitySafeStop";
 import { Joystick } from "@/components/control/Joystick";
-import { LiveControlPanel } from "@/components/control/LiveControlPanel";
+import { ActionButtons } from "@/components/control/ActionButtons";
 import { useGamepad } from "@/lib/hooks/useGamepad";
-import { TelemetryHUD } from "@/components/control/TelemetryHUD";
+import { GamepadWidget } from "@/components/control/GamepadWidget";
 import { SafetyBanner } from "@/components/control/SafetyBanner";
 import { RecoveryModal } from "@/components/control/RecoveryModal";
 import { CockpitToolbar } from "@/components/control/CockpitToolbar";
-import { CockpitModeSwitcher } from "@/components/control/CockpitModeSwitcher";
-import { BrightnessToggle } from "@/components/control/BrightnessToggle";
 import { useCockpitStore } from "@/lib/stores/cockpit-store";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { LocalAudioTrack, createLocalAudioTrack } from "livekit-client";
-import { Brand } from "@/components/ui/Brand";
 import { Button } from "@/components/ui/Button";
 import { StatusDot } from "@/components/ui/Stat";
+// DJI FPV cockpit chrome
+import { HudStatusBar } from "@/components/cockpit/HudStatusBar";
+import { StopButton } from "@/components/cockpit/StopButton";
+import { TelemetryDrawer } from "@/components/cockpit/TelemetryDrawer";
+import { SettingsDrawer } from "@/components/cockpit/SettingsDrawer";
+import { RotateHint } from "@/components/cockpit/RotateHint";
+import { FullscreenButton } from "@/components/cockpit/FullscreenButton";
 import {
   decodeTelemetry,
   decodeSafetyEvent,
@@ -61,8 +65,8 @@ export default function ControlViewPage() {
   const vehicleId = params?.vehicleId ?? "";
 
   const channelRef = useRef<ControlChannel | null>(null);
-  // Mirror channelRef in state so LiveControlPanel + useGamepad re-render when
-  // the channel is (re-)created or torn down.
+  // Mirror channelRef in state so consumers re-render when the channel is
+  // (re-)created or torn down.
   const [controlChannel, setControlChannel] = useState<ControlChannel | null>(null);
   const [state, setState] = useState<ConnectionState>(ConnectionState.Disconnected);
   const [error, setError] = useState<string | null>(null);
@@ -83,6 +87,13 @@ export default function ControlViewPage() {
   // Map of tile-sid → live <video> element (registered by VideoTileView via callback ref)
   const videoElsRef = useRef<Map<string, HTMLVideoElement>>(new Map());
 
+  // ── DJI FPV chrome state ────────────────────────────────────────
+  const [telemetryDrawerOpen, setTelemetryDrawerOpen] = useState(false);
+  const [settingsDrawerOpen, setSettingsDrawerOpen] = useState(false);
+  // Snapshot of ControlChannel stats — polled at 5 Hz when drawer is open,
+  // skipped otherwise to save battery.
+  const [controlStats, setControlStats] = useState<ControlStats | null>(null);
+
   // ── S17 cockpit modes (immersive / standard / mission) ──────────────────
   const hydrated = useHydrated();
   const storedMode = useCockpitStore((s) => s.mode);
@@ -94,21 +105,14 @@ export default function ControlViewPage() {
   const cockpitBrightness = hydrated ? storedBrightness : "auto";
 
   // ── S18 mobile safety gates ─────────────────────────────────────────────
-  // Active control = healthy LiveKit + edge not in safe_mode. Wake lock and
-  // visibility STOP only engage in this window so safe_mode / disconnected
-  // sessions don't keep the screen awake.
   const activeControl =
     state === ConnectionState.Connected && safetyState === "active";
 
-  // Wake lock auto re-acquires on visibility=visible; status surfaced via
-  // window.__rvepWakeLock for the cockpit indicator (S17 will turn into UI).
   useWakeLock(activeControl);
 
   // Gamepad API（C6 加強）— Xbox / PS5 controller 直接驅動 cmd_vel + STOP
   const gamepad = useGamepad({ channel: controlChannel, enabled: activeControl });
 
-  // Track the safe-stop banner timer so we can cancel it on unmount and avoid
-  // a setState after the cockpit has navigated away.
   const safeStopBannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -120,10 +124,6 @@ export default function ControlViewPage() {
   usePageVisibilitySafeStop({
     enabled: activeControl,
     onStop: (reason) => {
-      // Synchronous path — mobile OS can freeze our JS within milliseconds of
-      // visibilitychange. sendEmergencyStopSync hands the payload to the UA's
-      // WebRTC stack inside this task tick, so the flush is no longer racing
-      // the freeze.
       const ch = channelRef.current;
       if (!ch) return;
       ch.sendEmergencyStopSync();
@@ -156,6 +156,19 @@ export default function ControlViewPage() {
     return () => clearInterval(t);
   }, []);
 
+  // Poll ControlChannel stats only while drawer is open (battery saving)
+  useEffect(() => {
+    if (!telemetryDrawerOpen || !controlChannel) {
+      // Still keep a single snapshot for when the drawer opens.
+      if (controlChannel) setControlStats(controlChannel.getStats());
+      return;
+    }
+    const tick = () => setControlStats(controlChannel.getStats());
+    tick();
+    const t = setInterval(tick, 200); // 5 Hz
+    return () => clearInterval(t);
+  }, [telemetryDrawerOpen, controlChannel]);
+
   useEffect(() => {
     if (!vehicleId) return;
 
@@ -184,8 +197,6 @@ export default function ControlViewPage() {
     };
 
     const onData = (payload: Uint8Array) => {
-      // DataChannel carries (a) telemetry @ 5 Hz, (b) safety events on demand.
-      // Both decoders return null for unrelated payloads — try in order.
       const t = decodeTelemetry(payload);
       if (t && t.vehicleId === vehicleId) {
         telemetryReceivedAt.current = Date.now();
@@ -200,11 +211,9 @@ export default function ControlViewPage() {
         } else if (s.event === "safe_mode_left") {
           setSafetyState("active");
         } else if (s.event === "edge_online") {
-          // edge_online is informational; the edge will follow up with
-          // safe_mode_entered (boot_default) if it's still safe. Don't flip to
-          // active here.
+          // informational; wait for safe_mode_left
         } else if (s.event === "fatal") {
-          setSafetyState("safe_mode"); // treat as safe + show banner
+          setSafetyState("safe_mode");
         }
       }
     };
@@ -223,13 +232,6 @@ export default function ControlViewPage() {
         if (cancelled) return;
         roomRef.current = room;
 
-        // sessionId + connectionEpoch are derived locally per page-load:
-        //   - sessionId uniquely tags every browser tab/visit
-        //   - connectionEpoch must be MONOTONIC INCREASING so the edge can
-        //     distinguish reconnects from stale messages.  Using Date.now()
-        //     gives us a clock-aligned, always-increasing epoch without needing
-        //     a backend round-trip.  When backend session API lands, replace
-        //     this with the authoritative epoch from that endpoint.
         const sessionId = `web-${Date.now()}`;
         const connectionEpoch = Date.now();
         const channel = new ControlChannel(room, vehicleId, sessionId, connectionEpoch);
@@ -251,7 +253,6 @@ export default function ControlViewPage() {
       channelRef.current?.stopHeartbeat();
       channelRef.current = null;
       setControlChannel(null);
-      // Best-effort: stop PTT track if still active
       if (pttTrackRef.current) {
         pttTrackRef.current.stop();
         pttTrackRef.current = null;
@@ -343,19 +344,17 @@ export default function ControlViewPage() {
     }
   };
 
-  async function emergencyStop() {
+  function emergencyStop() {
     const channel = channelRef.current;
     if (!channel) {
       setError("not_connected");
       return;
     }
-    try {
-      await channel.sendEmergencyStop();
-      setLastCmd("EMERGENCY_STOP 已送出");
-      setTimeout(() => setLastCmd(null), 3000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "publish_failed");
-    }
+    // Synchronous: hand to RTC stack inside this tick to beat OS freeze.
+    channel.sendEmergencyStopSync();
+    setLastCmd("EMERGENCY_STOP 已送出");
+    if (safeStopBannerTimer.current) clearTimeout(safeStopBannerTimer.current);
+    safeStopBannerTimer.current = setTimeout(() => setLastCmd(null), 3000);
   }
 
   const connected = state === ConnectionState.Connected;
@@ -371,9 +370,8 @@ export default function ControlViewPage() {
       state === ConnectionState.SignalReconnecting
     )
       return "reconnecting";
-    // Connected:
     if (safetyState === "active") return "active";
-    return "safe_locked"; // includes unknown / safe_mode
+    return "safe_locked";
   })();
 
   const joystickEnabled = displayState === "active";
@@ -394,13 +392,24 @@ export default function ControlViewPage() {
     fatal: "需介入",
   };
 
+  // Latency proxy for HUD LINK indicator — prefer network RTT, fall back to
+  // last-cmd-ago which reflects DataChannel responsiveness.
+  const connLatencyMs =
+    telemetry?.network?.rttMs ??
+    (controlStats && controlStats.lastCmdAgoMs !== Number.POSITIVE_INFINITY
+      ? controlStats.lastCmdAgoMs
+      : null);
+
+  // SafetyBanner visibility — duplicates SafetyBanner's internal logic so we
+  // can shift the HUD pill down when the banner pushes content. SafetyBanner
+  // returns null when state === "active".
+  const safetyBannerVisible = displayState !== "active";
+
   async function handleResume(): Promise<boolean> {
     const channel = channelRef.current;
     if (!channel) return false;
     try {
       await channel.sendResume();
-      // Optimistic UI: we'll flip to active when we receive safe_mode_left.
-      // If no response within 2s, modal stays open (acts as retry affordance).
       return true;
     } catch {
       return false;
@@ -409,16 +418,19 @@ export default function ControlViewPage() {
 
   if (!isLandscape) {
     return (
-      <PortraitFallback
-        vehicleId={vehicleId}
-        tiles={tiles}
-        stateTone={stateTone}
-        stateLabel={stateLabel[displayState]}
-        error={error}
-        lastCmd={lastCmd}
-        onBack={() => router.push("/vehicles")}
-        onEmergency={emergencyStop}
-      />
+      <>
+        <RotateHint />
+        <PortraitFallback
+          vehicleId={vehicleId}
+          tiles={tiles}
+          stateTone={stateTone}
+          stateLabel={stateLabel[displayState]}
+          error={error}
+          lastCmd={lastCmd}
+          onBack={() => router.push("/vehicles")}
+          onEmergency={emergencyStop}
+        />
+      </>
     );
   }
 
@@ -426,11 +438,14 @@ export default function ControlViewPage() {
     <main
       data-cockpit-mode={cockpitMode}
       data-brightness={cockpitBrightness}
-      className="fixed inset-0 flex flex-col bg-black overflow-hidden"
+      className="fixed inset-0 bg-black overflow-hidden"
+      style={{
+        // Dynamic viewport so iOS Safari URL bar collapsing doesn't leave a gap.
+        width: "100dvw",
+        height: "100dvh",
+      }}
     >
-      {/* P0-4: Skip-to-STOP keyboard shortcut link — invisible until focused.
-       *  Provides a way for keyboard users to reach STOP without navigating the
-       *  entire cockpit UI (critical safety affordance). */}
+      {/* Skip-to-STOP for keyboard users (invisible until focused). */}
       <a
         href="#emergency-stop-btn"
         className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-[100] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-[var(--accent-red)] focus:text-white focus:font-bold focus:text-sm focus:shadow-lg"
@@ -438,81 +453,18 @@ export default function ControlViewPage() {
         跳至緊急停止
       </a>
 
-      {/* P0-mobile fix (2026-05-20): Immersive 模式藏 Header → 手機/平板沒鍵盤無法切回。
-       *  加一個 z-50 浮動按鈕，僅 Immersive 顯示，44×44 觸控友善尺寸。 */}
-      {cockpitMode === "immersive" && (
-        <button
-          type="button"
-          onClick={() => setCockpitMode("standard")}
-          aria-label="退出 Immersive 模式，回到 Standard"
-          title="退出 Immersive (回 Standard)"
-          data-testid="exit-immersive-btn"
-          className="fixed top-3 right-3 z-50 h-11 w-11 rounded-full bg-black/70 border border-white/25 text-white text-xl flex items-center justify-center backdrop-blur hover:bg-black/85 active:scale-95 transition shadow-lg"
-        >
-          ⤢
-        </button>
-      )}
+      {/* RotateHint — fullscreen overlay if rotated portrait while in cockpit */}
+      <RotateHint />
 
-      <header
-        data-cockpit-layer="L2"
-        className="z-20 flex items-center justify-between px-4 py-2 border-b border-[var(--border-subtle)] bg-black/60 backdrop-blur"
-      >
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="sm" onClick={() => router.push("/vehicles")} data-testid="back-btn">
-            ← Fleet
-          </Button>
-          <Brand size="sm" />
-        </div>
-
-        {/* P0-10 fix (2026-05-20): drop redundant Vehicle/Tiles labels — already
-         * surfaced in Mission aside. Drops Header to 4 elements so it fits in
-         * 768px tablet viewport without wrapping. */}
-        <div className="flex items-center gap-3">
-          <CockpitModeSwitcher />
-          <BrightnessToggle />
-          <div
-            className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/40 border border-[var(--border-subtle)]"
-            data-testid="tile-count"
-            title={`Vehicle: ${vehicleId} · Tiles: ${tiles.length}`}
-          >
-            <StatusDot tone={stateTone} />
-            <span className="text-xs text-neutral-300" data-testid="conn-state">
-              {stateLabel[displayState]}
-            </span>
-          </div>
-        </div>
-      </header>
-
-      <SafetyBanner
-        safetyState={
-          displayState === "disconnected" || displayState === "reconnecting"
-            ? "lost"
-            : displayState === "active"
-              ? "active"
-              : safetyState === "unknown" && connected
-                ? "unknown"
-                : "safe_mode"
-        }
-        reason={safetyEvent?.reason}
-        lastEvent={safetyEvent?.event}
-      />
-
-      <RecoveryModal
-        open={displayState === "safe_locked"}
-        reason={safetyEvent?.reason}
-        onConfirm={handleResume}
-      />
-
+      {/* ── Layer 0: Video full-bleed (under everything) ──────────────────── */}
       <section
-        className={`relative flex-1 ${
-          focusSid
-            ? "flex"
-            : "grid grid-cols-1 md:grid-cols-2"
-        } gap-2 p-2`}
+        className={`absolute inset-0 ${
+          focusSid ? "flex" : "grid grid-cols-1 md:grid-cols-2"
+        } gap-1`}
         data-testid="video-grid"
       >
         {tiles.length === 0 && (
-          <div className="col-span-full flex items-center justify-center text-neutral-600">
+          <div className="col-span-full flex items-center justify-center text-neutral-600 bg-black">
             <div className="flex flex-col items-center gap-3">
               <div className="h-12 w-12 rounded-full border-2 border-neutral-800 border-t-neutral-500 animate-spin" />
               <span className="text-sm">等待視訊串流…</span>
@@ -532,158 +484,263 @@ export default function ControlViewPage() {
               registerVideoEl={registerVideoEl}
             />
           ))}
+      </section>
 
+      {/* ── Layer 1: Safety banners (top, full-width strips) ──────────────── */}
+      <div className="pointer-events-none fixed left-0 right-0 z-30" style={{ top: "max(0rem, env(safe-area-inset-top))" }}>
+        <div className="pointer-events-auto">
+          <SafetyBanner
+            safetyState={
+              displayState === "disconnected" || displayState === "reconnecting"
+                ? "lost"
+                : displayState === "active"
+                  ? "active"
+                  : safetyState === "unknown" && connected
+                    ? "unknown"
+                    : "safe_mode"
+            }
+            reason={safetyEvent?.reason}
+            lastEvent={safetyEvent?.event}
+          />
+        </div>
+      </div>
+
+      {/* ── Layer 1: L1 常駐 HUD status bar (top-center) ──────────────────── */}
+      <HudStatusBar
+        telemetry={telemetry}
+        staleMs={telemetryStaleMs}
+        connLatencyMs={connLatencyMs}
+        onExpand={() => setTelemetryDrawerOpen((v) => !v)}
+        expanded={telemetryDrawerOpen}
+        topOffsetPx={safetyBannerVisible ? 40 : 0}
+      />
+
+      {/* ── Layer 1: STOP — top-right corner, opposite the back chevron ────
+          Sits 48px in from the right edge to give FullscreenButton (top-3 right-3,
+          32×32) its own breathing room next to it. STOP stays in the top-right
+          half so right-thumb can hit it without crossing the screen. */}
+      <div
+        className="pointer-events-none fixed z-40 flex items-center gap-2"
+        style={{
+          top: `calc(max(0.5rem, env(safe-area-inset-top)) + ${safetyBannerVisible ? 40 : 0}px)`,
+          right: "calc(max(0.75rem, env(safe-area-inset-right)) + 2.75rem)",
+        }}
+      >
+        <StopButton onStop={emergencyStop} />
+      </div>
+
+      {/* ── Layer 1: Settings gear (top-left, drives SettingsDrawer) ──────── */}
+      <div
+        className="pointer-events-none fixed z-40 flex items-center gap-2"
+        style={{
+          top: `calc(max(0.5rem, env(safe-area-inset-top)) + ${safetyBannerVisible ? 40 : 0}px)`,
+          left: "max(0.75rem, env(safe-area-inset-left))",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setSettingsDrawerOpen(true)}
+          aria-label="駕駛艙設定"
+          title="駕駛艙設定（模式 / 亮度 / 返回 Fleet）"
+          data-testid="settings-trigger"
+          className="pointer-events-auto h-11 w-11 rounded-full bg-black/55 border border-white/15 backdrop-blur-md text-neutral-200 hover:bg-black/75 hover:text-white active:scale-95 transition flex items-center justify-center"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9 1.65 1.65 0 0 0 4.27 7.18l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+        {/* Fullscreen — overlaps with FullscreenButton's own top-3 right-3
+            placement, so render here for visual rhythm with the gear. */}
+      </div>
+
+      {/* FullscreenButton self-positions at top-3 right-3 (its own fixed
+          chrome). It will sit underneath the STOP button (z-40 > z-30) on iPad
+          where both exist; on iPhone the device kind is "iphone" and it
+          renders an A2HS overlay instead, no clash. Leaving it untouched is
+          required (separate-agent territory per spec). */}
+      <FullscreenButton />
+
+      {/* Toast strip — error + lastCmd live below HUD bar. Pulled out of video
+          grid so they never push joystick. */}
+      <div
+        className="pointer-events-none fixed left-1/2 -translate-x-1/2 z-40"
+        style={{
+          top: `calc(max(0.5rem,env(safe-area-inset-top)) + ${safetyBannerVisible ? 40 : 0}px + 3rem)`,
+        }}
+      >
         {error && (
           <div
-            className="absolute top-3 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-[var(--accent-red)]/20 border border-[var(--accent-red)]/50 text-sm text-[var(--accent-red)] backdrop-blur"
+            className="px-4 py-2 rounded-full bg-[var(--accent-red)]/30 border border-[var(--accent-red)]/60 text-sm text-[var(--accent-red)] backdrop-blur"
             data-testid="error-banner"
           >
             連線錯誤：{error}
           </div>
         )}
-
-        {lastCmd && (
+        {lastCmd && !error && (
           <div
-            className="absolute top-3 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-[var(--accent-amber)]/20 border border-[var(--accent-amber)]/50 text-sm text-[var(--accent-amber)] backdrop-blur"
+            className="px-4 py-2 rounded-full bg-[var(--accent-amber)]/25 border border-[var(--accent-amber)]/60 text-sm text-[var(--accent-amber)] backdrop-blur whitespace-nowrap"
             data-testid="cmd-toast"
           >
             ✓ {lastCmd}
           </div>
         )}
+      </div>
 
-        {/* iPad UX: thumb naturally rests ~60-80px from bottom edge when held
-            two-handed in landscape. Push joystick + STOP inward on touch
-            devices via @media (pointer:coarse). */}
-        <div className="fixed left-6 bottom-6 z-40 pointer-coarse:left-8 pointer-coarse:bottom-12">
-          <Joystick
-            disabled={!joystickEnabled}
-            onChange={(axes) => {
-              channelRef.current?.sendMovement(axes).catch(() => {});
-            }}
-            onRelease={() => {
-              channelRef.current
-                ?.sendMovement({ forward: 0, lateral: 0, yaw: 0 })
-                .catch(() => {});
-            }}
-          />
-        </div>
-
-        {/* Cockpit layout (landscape):
-              left side  → joystick (bottom-center) + 緊湊 HUD（無 overlap）
-              right side → telemetry HUD (top, narrow column) + STOP (bottom corner)
-              center bottom → snapshot / PTT toolbar
-        */}
-        <div className="absolute left-4 top-4 z-10" data-cockpit-layer="L2">
-          <TelemetryHUD telemetry={telemetry} staleMs={telemetryStaleMs} />
-        </div>
-
-        {/* Live Control Data overlay — DataChannel cmd_vel telemetry for demo */}
-        <LiveControlPanel
-          channel={controlChannel}
-          channelConnected={state === ConnectionState.Connected}
-          gamepadConnected={gamepad.connected}
-          gamepadName={gamepad.gamepadName}
-        />
-
-        <div className="fixed right-6 bottom-6 z-40 pointer-coarse:right-8 pointer-coarse:bottom-12">
-          <EmergencyStopButton onClick={emergencyStop} />
-        </div>
-
-        <div data-cockpit-layer="L2">
-          <CockpitToolbar
-            onSnapshot={handleSnapshot}
-            onPTTStart={handlePTTStart}
-            onPTTEnd={handlePTTEnd}
-            pttActive={pttActive}
-            disabled={displayState !== "active"}
-          />
-        </div>
-
-        {/* L3: mission-mode side panel — densest layer, only in mission mode. */}
-        <aside
-          data-cockpit-layer="L3"
-          data-testid="mission-panel"
-          className="absolute right-4 top-4 z-10 w-56 xl:w-64 max-h-[60%] overflow-auto surface rounded-[var(--radius-md)] p-3 text-[11px] tracking-wider"
-        >
-          <div className="uppercase text-neutral-500 mb-2">Mission</div>
-          <dl className="grid grid-cols-2 gap-y-1 text-neutral-300 cockpit">
-            <dt className="text-neutral-500">Vehicle</dt>
-            <dd className="text-right">{vehicleId}</dd>
-            <dt className="text-neutral-500">Tiles</dt>
-            <dd className="text-right">{tiles.length}</dd>
-            <dt className="text-neutral-500">State</dt>
-            <dd className="text-right">{stateLabel[displayState]}</dd>
-            <dt className="text-neutral-500">Safety</dt>
-            <dd className="text-right">{safetyState}</dd>
-            {telemetry?.gps && (
-              <>
-                <dt className="text-neutral-500">Lat</dt>
-                <dd className="text-right">{telemetry.gps.lat.toFixed(5)}</dd>
-                <dt className="text-neutral-500">Lng</dt>
-                <dd className="text-right">{telemetry.gps.lng.toFixed(5)}</dd>
-              </>
-            )}
-            {telemetry?.battery && (
-              <>
-                <dt className="text-neutral-500">Battery</dt>
-                <dd className="text-right">
-                  {Math.round(telemetry.battery.pct)}%
-                </dd>
-              </>
-            )}
-          </dl>
-        </aside>
-      </section>
-    </main>
-  );
-}
-
-function Telemetry({
-  label,
-  value,
-  mono,
-  testid,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  testid?: string;
-}) {
-  return (
-    <div className="flex flex-col">
-      <span className="text-[11px] uppercase tracking-[0.16em] text-neutral-500">
-        {label}
-      </span>
-      <span
-        className={`text-xs font-medium ${mono ? "cockpit tabular-nums" : ""}`}
-        data-testid={testid}
+      {/* ── Layer 1: Left thumb — Joystick (bottom-left) ─────────────────── */}
+      <div
+        className="pointer-events-auto fixed z-40"
+        style={{
+          left: "max(1.5rem, env(safe-area-inset-left))",
+          bottom: "max(1.5rem, env(safe-area-inset-bottom))",
+        }}
       >
-        {value}
-      </span>
-    </div>
-  );
-}
+        <Joystick
+          disabled={!joystickEnabled}
+          onChange={(axes) => {
+            channelRef.current?.sendMovement(axes).catch(() => {});
+          }}
+          onRelease={() => {
+            channelRef.current
+              ?.sendMovement({ forward: 0, lateral: 0, yaw: 0 })
+              .catch(() => {});
+          }}
+        />
+      </div>
 
-function EmergencyStopButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      id="emergency-stop-btn"
-      onClick={onClick}
-      data-testid="emergency-stop"
-      aria-label="Emergency stop — 緊急停止"
-      className="
-        w-24 h-24 rounded-full
-        bg-[var(--accent-red)] text-white
-        flex flex-col items-center justify-center
-        font-bold tracking-[0.18em] uppercase text-[10px]
-        shadow-[0_0_40px_rgba(227,25,55,0.45)]
-        active:scale-95 transition-transform
-        border-4 border-[var(--accent-red-dim)]
-      "
-    >
-      <span className="text-2xl leading-none">✕</span>
-      <span className="mt-1">STOP</span>
-    </button>
+      {/* ── Layer 1: Right thumb — MOBA action cluster (bottom-right) ────── */}
+      {/* 傳說對決 layout: 1 large forward button + arc of 3 small buttons
+          (back / turn-left / turn-right). Mirrors the Joystick under the left
+          thumb so both hands stay anchored in landscape. */}
+      <div
+        className="pointer-events-auto fixed z-40"
+        style={{
+          right: "max(1.5rem, env(safe-area-inset-right))",
+          bottom: "max(1.5rem, env(safe-area-inset-bottom))",
+        }}
+      >
+        <ActionButtons
+          disabled={!joystickEnabled}
+          onPress={(axes) => {
+            channelRef.current?.sendMovement(axes).catch(() => {});
+          }}
+          onRelease={() => {
+            channelRef.current
+              ?.sendMovement({ forward: 0, lateral: 0, yaw: 0 })
+              .catch(() => {});
+          }}
+        />
+      </div>
+
+      {/* ── Layer 1: view focus toggle — moved above the action cluster and
+          shrunk (h-9) now that the MOBA buttons own the bottom-right corner. */}
+      {tiles.length > 1 && (
+        <div
+          className="pointer-events-auto fixed z-40"
+          style={{
+            right: "max(1.5rem, env(safe-area-inset-right))",
+            bottom: "calc(max(1.5rem, env(safe-area-inset-bottom)) + 12.5rem)",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setFocusSid(focusSid ? null : tiles[0]?.sid ?? null)}
+            aria-label={focusSid ? "返回多鏡頭網格" : "放大第一鏡頭"}
+            title={focusSid ? "返回多鏡頭網格" : "放大第一鏡頭"}
+            className="h-9 w-9 rounded-full bg-black/60 border border-white/20 backdrop-blur-md text-white text-base flex items-center justify-center hover:bg-black/80 active:scale-95 transition"
+            data-testid="focus-toggle"
+          >
+            {focusSid ? "▦" : "⤢"}
+          </button>
+        </div>
+      )}
+
+      {/* ── Layer 2: Gamepad widget (only when connected) ─────────────────── */}
+      {gamepad.connected && (
+        <div
+          className="pointer-events-auto fixed z-30"
+          style={{
+            right: "calc(max(1.5rem, env(safe-area-inset-right)) + 4rem)",
+            bottom: "calc(max(1.5rem, env(safe-area-inset-bottom)) + 12.5rem)",
+          }}
+          data-cockpit-layer="L2"
+        >
+          <GamepadWidget gamepad={gamepad} compact />
+        </div>
+      )}
+
+      {/* ── Layer 2: Bottom toolbar — snapshot + PTT (centered) ───────────── */}
+      <div data-cockpit-layer="L2" className="pointer-events-none">
+        <CockpitToolbar
+          onSnapshot={handleSnapshot}
+          onPTTStart={handlePTTStart}
+          onPTTEnd={handlePTTEnd}
+          pttActive={pttActive}
+          disabled={displayState !== "active"}
+        />
+      </div>
+
+      {/* ── Layer 2: Telemetry drawer (top, expandable) ───────────────────── */}
+      <TelemetryDrawer
+        open={telemetryDrawerOpen}
+        onClose={() => setTelemetryDrawerOpen(false)}
+        telemetry={telemetry}
+        staleMs={telemetryStaleMs}
+        controlStats={controlStats}
+        channelConnected={state === ConnectionState.Connected}
+        gamepadConnected={gamepad.connected}
+        gamepadName={gamepad.gamepadName}
+      />
+
+      {/* ── Layer 3: Settings drawer (right, slides in) ───────────────────── */}
+      <SettingsDrawer
+        open={settingsDrawerOpen}
+        onClose={() => setSettingsDrawerOpen(false)}
+        onBackToFleet={() => router.push("/vehicles")}
+        vehicleId={vehicleId}
+        tileCount={tiles.length}
+        stateLabel={stateLabel[displayState]}
+      />
+
+      {/* ── Recovery modal (full-screen interstitial in safe_locked) ──────── */}
+      <RecoveryModal
+        open={displayState === "safe_locked"}
+        reason={safetyEvent?.reason}
+        onConfirm={handleResume}
+      />
+
+      {/* Connection state chip — bottom-center thin pill so operator always
+          knows whether they're 連線中 / 正常控制 / 重連中 without opening drawer.
+          Sits just above CockpitToolbar; only visible in immersive too since
+          this is a critical safety indicator (not L2). */}
+      <div
+        className="pointer-events-none fixed left-1/2 -translate-x-1/2 z-30"
+        style={{ bottom: "calc(max(1.5rem,env(safe-area-inset-bottom)) + 4.25rem)" }}
+        data-testid="conn-state-chip-wrap"
+      >
+        <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-black/55 border border-white/15 backdrop-blur-md text-[10px] tracking-[0.2em] uppercase">
+          <StatusDot tone={stateTone} />
+          <span className="text-neutral-200" data-testid="conn-state">
+            {stateLabel[displayState]}
+          </span>
+        </div>
+      </div>
+
+      {/* P0-mobile fix (2026-05-20): Immersive 模式藏 L2/L3 → 手機沒鍵盤無法切回。
+       *  保留浮動退出按鈕避免使用者被困。 */}
+      {cockpitMode === "immersive" && (
+        <button
+          type="button"
+          onClick={() => setCockpitMode("standard")}
+          aria-label="退出 Immersive 模式，回到 Standard"
+          title="退出 Immersive (回 Standard)"
+          data-testid="exit-immersive-btn"
+          className="fixed top-16 right-3 z-50 h-9 w-9 rounded-full bg-black/70 border border-white/25 text-white text-sm flex items-center justify-center backdrop-blur hover:bg-black/85 active:scale-95 transition shadow-lg"
+        >
+          ⤢
+        </button>
+      )}
+    </main>
   );
 }
 
@@ -691,9 +748,7 @@ interface TileStats {
   fps: number;
   width: number;
   height: number;
-  /** Glass-to-glass (capture-on-sender → present-on-receiver), ms. */
   g2gMs: number;
-  /** Did we get sender's capture time? false → falls back to receive→present only */
   haveCaptureTime: boolean;
 }
 
@@ -753,12 +808,9 @@ function VideoTileView({
     const cb = (now: number, meta: VideoFrameMetadataExt) => {
       if (stopped) return;
 
-      // Sliding-window FPS over last second.
       frameStamps.push(now);
       while (frameStamps.length && now - frameStamps[0] > 1000) frameStamps.shift();
 
-      // Glass-to-glass: prefer sender's capture time (abs-capture-time RTP ext).
-      // Fallback: receive→present.
       let g2g = 0;
       if (typeof meta.captureTime === "number" && meta.captureTime > 0) {
         g2g = now - meta.captureTime;
@@ -771,7 +823,6 @@ function VideoTileView({
         if (g2gSamples.length > 30) g2gSamples.shift();
       }
 
-      // Throttle React update to every 500ms.
       if (now - lastUpdate > 500) {
         lastUpdate = now;
         const avgG2G = g2gSamples.length
@@ -797,7 +848,7 @@ function VideoTileView({
 
   return (
     <div
-      className="relative w-full h-full min-h-0 rounded-[var(--radius-md)] overflow-hidden surface group"
+      className="relative w-full h-full min-h-0 overflow-hidden bg-black group"
       data-testid={`tile-${tile.identity}`}
       data-focused={focused ? "true" : undefined}
     >
@@ -809,25 +860,20 @@ function VideoTileView({
         onDoubleClick={onToggleFocus}
         className="w-full h-full object-cover bg-black cursor-zoom-in"
       />
-      {onToggleFocus && (
-        <button
-          type="button"
-          onClick={onToggleFocus}
-          className="absolute top-3 right-3 z-10 px-2 py-1 rounded-md bg-black/60 backdrop-blur border border-white/10 text-[11px] text-neutral-200 hover:bg-white/10 transition opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100"
-          data-testid={`focus-toggle-${tile.identity}`}
-          title={focused ? "返回網格" : "放大此鏡頭"}
-        >
-          {focused ? "↙ 返回網格" : "⤢ 放大"}
-        </button>
-      )}
-      <div className="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur border border-white/10">
+      {/* Tile identity badge — top-right corner so it doesn't clash with HUD bar */}
+      <div
+        className="absolute top-3 right-3 flex items-center gap-1.5 px-2 py-1 rounded-full bg-black/55 backdrop-blur-md border border-white/15 pointer-events-none"
+        data-cockpit-layer="L2"
+      >
         <StatusDot tone="online" />
-        <span className="text-xs text-neutral-200">{tile.identity}</span>
+        <span className="text-[10px] text-neutral-200 tracking-[0.12em] uppercase">{tile.identity}</span>
       </div>
+      {/* Per-tile stats — small, bottom-left, Mission mode only */}
       {stats && (
         <div
-          className="absolute bottom-3 left-3 px-3 py-2 rounded-lg bg-black/75 backdrop-blur border border-white/10 text-[11px] font-mono leading-tight cockpit"
+          className="absolute bottom-3 left-3 px-2 py-1 rounded-md bg-black/55 backdrop-blur border border-white/10 text-[10px] font-mono leading-tight cockpit pointer-events-none"
           data-testid={`stats-${tile.identity}`}
+          data-cockpit-layer="L3"
         >
           <div className="text-neutral-300">
             {stats.width}×{stats.height} · {stats.fps} fps
@@ -842,16 +888,10 @@ function VideoTileView({
             }
             title="接收端延遲：jitter buffer + decode + render。不含 sender 端 encode 跟網路傳輸（真實 G2G ≈ 此值 + 200ms）"
           >
-            延遲 {stats.g2gMs.toFixed(0)} ms <span className="text-[9px] text-neutral-500">(recv only)</span>
-          </div>
-          <div className="text-neutral-500 text-[10px]">
-            真實 G2G ≈ +200ms（含 sender 編碼 + 網路）
+            {stats.g2gMs.toFixed(0)} ms <span className="text-[9px] text-neutral-500">(recv)</span>
           </div>
         </div>
       )}
-      <div className="absolute bottom-3 right-3 text-[10px] uppercase tracking-[0.18em] text-neutral-400 bg-black/40 px-2 py-1 rounded">
-        Live
-      </div>
     </div>
   );
 }

@@ -58,6 +58,38 @@ export async function issueLivekitToken(
   return { token, url, roomName, identity, expiresAt };
 }
 
+/**
+ * c15 P3 — issue a long-lived edge token for a vehicle deployment.
+ * Publisher-grade grants (the edge publishes video + telemetry over the
+ * DataChannel), custom identity + TTL. Used by the admin token-mint and
+ * deploy-package endpoints; every mint is audit-logged by the caller.
+ */
+export async function issueVehicleEdgeToken(
+  vehicleId: string,
+  opts: { ttlSeconds: number; identity: string },
+): Promise<LivekitTokenResult> {
+  const { apiKey, apiSecret, url } = getLivekitConfig();
+
+  const roomName = `ugv-${vehicleId}`;
+  const expiresAt = new Date(Date.now() + opts.ttlSeconds * 1000);
+
+  const at = new AccessToken(apiKey, apiSecret, {
+    identity: opts.identity,
+    ttl: opts.ttlSeconds,
+  });
+  at.addGrant({
+    roomJoin: true,
+    room: roomName,
+    canSubscribe: true,
+    canPublish: true,
+    canPublishData: true,
+  });
+
+  const token = await at.toJwt();
+
+  return { token, url, roomName, identity: opts.identity, expiresAt };
+}
+
 function buildGrants(roomName: string, role: LivekitRole): VideoGrant {
   const base: VideoGrant = {
     roomJoin: true,

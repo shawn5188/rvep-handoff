@@ -1,0 +1,52 @@
+cameraId: sim-front
+sensorId: 100
+identity: edge-sim-front
+trackName: rv1-sim-front
+
+videoProfile:
+  width: 1280
+  height: 720
+  framerate: 30            # target; sim 目前 2-5 hz 由 Isaac Sim stage 決定
+  bitrateBps: 4000000
+  iframeIntervalFrames: 30
+
+# Isaac Sim → ROS 2 topic → container bridge (shmsink) → 本 profile (shmsrc)
+# → NVENC → LiveKit。取代真 ZED-X 做 sim demo。
+#
+# 拍板決策: memory/project_rvep_isaacsim_to_livekit_bridge_decision.md
+# (2026-08-04 4 專家 3 輪 shmsrc 為終局；未來升 NITROS 不經 rosimagesrc)
+#
+# ⚠️ Caps 必須跟 bridge 端 (07b_ros_to_shm.py) 100% 一致，不然 shmsrc
+# not-negotiated fail-fast — Step 7b PoC 驗收 1，防 R2 VAAPI 陰影復發
+#
+# 切回 real ZED-X:
+#   sudo systemctl stop  rvep-publisher@sim-front
+#   sudo systemctl stop  rvep-bridge@front
+#   sudo systemctl start rvep-publisher@front       # nvarguscamerasrc
+#
+# Pipeline notes:
+#   - shmsrc do-timestamp=true 用 host clock 打 PTS（bridge PTS 已在 appsrc 塞 ROS stamp,
+#     shmsink 傳過來後 shmsrc 覆蓋一次；生產再挑）
+#   - videoconvert 冗餘保險：若 bridge FORMAT 未來換 BGR/YUV 也能吞
+#   - nvvidconv 從系統記憶體 lift 到 NVMM（跟 ZED-X 差別：ZED-X 已在 NVMM）
+#   - nvv4l2h264enc preset-level=1 (低延遲) — sim 網路優先，preset-3 之後量產再調
+#   - insert-sps-pps=true 每 IDR inline SPS/PPS (Go publisher 不再注入, ADR-006)
+
+gstreamerPipeline: |
+  shmsrc socket-path=/run/rvep/shm/front.sock is-live=true do-timestamp=true !
+    video/x-raw,format=RGB,width=1280,height=720 !
+    videoconvert !
+    nvvidconv !
+    video/x-raw(memory:NVMM),width=1280,height=720,format=NV12 !
+    nvv4l2h264enc bitrate=4000000 iframeinterval=30
+                  preset-level=1 maxperf-enable=1
+                  EnableTwopassCBR=0 insert-sps-pps=true !
+    h264parse !
+    video/x-h264,stream-format=avc,alignment=au !
+    appsink name=sink sync=false drop=true max-buffers=4 emit-signals=true
+
+livekit:
+  url: ws://192.168.68.68:7880
+  apiKey: devkey
+  apiSecret: devsecret
+  room: ugv-vehicle-001

@@ -1,14 +1,24 @@
 "use client";
 
-import { useState, FormEvent } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState, FormEvent } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { login, ApiError } from "@/lib/api-client";
 import { Brand } from "@/components/ui/Brand";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 
 export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginInner />
+    </Suspense>
+  );
+}
+
+function LoginInner() {
   const router = useRouter();
+  // c15 P4 — arriving from /accept-invite after setting the password.
+  const invited = useSearchParams().get("invited") === "1";
   const [email, setEmail] = useState("admin@example.com");
   const [password, setPassword] = useState("Admin1234!");
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +52,15 @@ export default function LoginPage() {
             遠端車輛邊緣控制 · 操作員 / 觀察員介面
           </p>
         </header>
+
+        {invited && (
+          <p
+            className="mb-6 text-sm text-emerald-300"
+            data-testid="login-invited-notice"
+          >
+            ✅ 密碼已設定，請登入
+          </p>
+        )}
 
         <form onSubmit={onSubmit} className="space-y-5">
           <Field

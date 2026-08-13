@@ -1,0 +1,68 @@
+# teleop_twist_joy config — Xbox 360 / Xbox One controller
+#
+# Axis numbering (Web Gamepad API → sensor_msgs/Joy layout):
+#   axes[0] = LX (left stick horizontal)
+#   axes[1] = LY (left stick vertical,  -1 = forward push)
+#   axes[2] = LT (left trigger,  0..−1)
+#   axes[3] = RX (right stick horizontal)
+#   axes[4] = RY (right stick vertical)
+#   axes[5] = RT (right trigger, 0..−1)
+#   axes[6] = D-pad X  (−1 = right, +1 = left)
+#   axes[7] = D-pad Y  (+1 = up,    −1 = down)
+#
+# Button numbering:
+#   buttons[0] = A (emergency stop assigned web-side)
+#   buttons[1] = B
+#   buttons[2] = X
+#   buttons[3] = Y
+#   buttons[4] = LB  ← dead-man-switch (enable_button)
+#   buttons[5] = RB  ← cruise / turbo  (enable_turbo_button)
+#   buttons[6] = LT (digital)
+#   buttons[7] = RT (digital)
+#   buttons[8] = Select / Back
+#   buttons[9] = Start / Menu
+#   buttons[10] = LS (left stick click)
+#   buttons[11] = RS (right stick click)
+#
+# Spec: openspec/features/contract-c1-c8/c12-joystick-support.md §Mapping YAML
+#       openspec/safety/joystick-gates.md §Gate 1 (dead-man) §Gate 2 (cruise)
+#       ADR-013
+
+teleop_twist_joy_node:
+  ros__parameters:
+
+    # Linear axis — left stick Y axis (index 1).
+    # LY pushed forward = -1 in hardware; teleop_twist_joy negates automatically.
+    axis_linear:
+      x: 1                              # axes[1] → linear.x (forward/backward)
+
+    # Scale: normal mode 0.3 m/s (conservative for indoor R2 demo).
+    scale_linear:
+      x: 0.3
+
+    # Angular axis — right stick X axis (index 3).
+    # RX pushed left = -1; negate convention handled by scale sign below.
+    axis_angular:
+      yaw: 3                            # axes[3] → angular.z
+
+    # Scale: 0.8 rad/s (matches MAX_ANGULAR_RADS in bridge env default).
+    scale_angular:
+      yaw: 0.8
+
+    # Dead-Man-Switch: must hold LB (button 4) to send any cmd_vel.
+    # Gate 1 per joystick-gates.md — operator hand-release = immediate stop.
+    enable_button: 4                    # LB
+
+    # Cruise / turbo: hold RB (button 5) 5 s in web UI → 30 s unlock.
+    # Gate 2 per joystick-gates.md — web hook manages timing; bridge just
+    # forwards raw joy frames, teleop_twist_joy uses this for scale_turbo.
+    enable_turbo_button: 5              # RB
+
+    # Turbo speeds (cruise mode): 2× normal limits.
+    scale_linear_turbo:
+      x: 0.6                            # 0.6 m/s ceiling in cruise
+    scale_angular_turbo:
+      yaw: 1.5                          # 1.5 rad/s ceiling in cruise
+
+    # Require enable button to be pressed (no free-running).
+    require_enable_button: true

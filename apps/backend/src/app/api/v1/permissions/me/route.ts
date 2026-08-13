@@ -8,14 +8,23 @@ export async function GET(request: NextRequest) {
   try {
     const ctx = await getAuthContext(request);
 
-    // Fetch per-vehicle permissions for this user.
-    const vehiclePermissions = await prisma.vehiclePermission.findMany({
-      where: { userId: ctx.userId },
-      select: { vehicleId: true, role: true },
-    });
+    // Fetch profile + per-vehicle permissions for this user.
+    // email/displayName power the admin shell user menu (c15 P2).
+    const [user, vehiclePermissions] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: ctx.userId },
+        select: { email: true, displayName: true },
+      }),
+      prisma.vehiclePermission.findMany({
+        where: { userId: ctx.userId },
+        select: { vehicleId: true, role: true },
+      }),
+    ]);
 
     return ok({
       userId: ctx.userId,
+      email: user?.email ?? null,
+      displayName: user?.displayName ?? null,
       role: ctx.role,
       vehiclePermissions: vehiclePermissions.map((p) => ({
         vehicleId: p.vehicleId,

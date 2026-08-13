@@ -1,0 +1,43 @@
+[Unit]
+Description=RVEP teleop_twist_joy — maps /joy → /joy_teleop/cmd_vel for R2
+Documentation=https://github.com/ros-teleop/teleop_twist_joy
+# Must start after the ROS 2 environment is available.
+# r2-bridge publishes /joy; teleop_twist_joy subscribes and outputs /joy_teleop/cmd_vel.
+# twist_mux arbitrates /rvep/cmd_vel (priority 80) vs /joy_teleop/cmd_vel (priority 10).
+After=network.target r2-twist-mux.service
+Wants=r2-twist-mux.service
+
+[Service]
+Type=simple
+User=mirdc
+Group=mirdc
+EnvironmentFile=-/etc/rvep/r2-bridge.env
+
+# Source ROS 2 Humble environment before launching the node.
+ExecStart=/bin/bash -c '\
+  source /opt/ros/humble/setup.bash && \
+  ros2 run teleop_twist_joy teleop_node \
+    --ros-args \
+    --params-file /opt/rvep/r2-bridge/config/joy_mapping_xbox360.yaml \
+    --remap cmd_vel:=/joy_teleop/cmd_vel \
+    --remap joy:=/joy \
+'
+
+Restart=on-failure
+RestartSec=3s
+
+# Watchdog: systemd kills+restarts the node if it stops reporting within 10 s.
+WatchdogSec=10s
+NotifyAccess=none
+
+# Resource limits (conservative for N3350 / UP Board)
+CPUQuota=15%
+MemoryMax=128M
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=r2-teleop-twist-joy
+
+[Install]
+WantedBy=multi-user.target

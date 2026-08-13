@@ -1,36 +1,71 @@
-# Dependencies
+# ── Dependencies ──────────────────────────────────────────────
 node_modules/
 .pnpm-store/
 
-# Build artifacts
-.next/
-dist/
-build/
-*.log
-*.tsbuildinfo
-
-# Environment files (NEVER commit secrets)
+# ── Secrets ───────────────────────────────────────────────────
 .env
 .env.local
 .env.*.local
+.env.production
+*.pem
+*.key
+!apps/edge-publisher-go/configs/*.yaml.example
 
-# Native binaries (must rebuild on target hardware)
-apps/edge-publisher-go/rvep-publisher
-*.exe
-
-# Runtime / caches
+# ── Next.js build artifacts ──────────────────────────────────
+.next/
+out/
 .turbo/
-.cache/
 
-# IDE
+# ── Go build artifacts (edge-publisher-go) ───────────────────
+apps/edge-publisher-go/bin/
+apps/edge-publisher-go/dist/
+apps/edge-publisher-go/*.exe
+
+# ── Python cache (r2-bridge) ─────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+
+# ── TypeScript / build outputs ───────────────────────────────
+dist/
+build/
+*.tsbuildinfo
+
+# ── Prisma generated client (regenerated per machine) ────────
+apps/backend/prisma/generated/
+
+# ── Test / coverage outputs ──────────────────────────────────
+coverage/
+.nyc_output/
+*.lcov
+
+# ── Dataset recordings (large, machine-specific) ─────────────
+/var/lib/rvep/datasets/
+datasets/
+# ...but the admin UI page named "datasets" is source code, not recordings (c15 P2 fix)
+!apps/web/src/app/admin/datasets/
+
+# ── OS / IDE ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
 *.swp
-*~
+*.swo
 
-# OS
-.DS_Store
-Thumbs.db
+# ── Logs ─────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ── Playwright / screenshots (dev only) ──────────────────────
+.playwright-mcp/
+playwright-report/
+test-results/
+
+# ── tmp ───────────────────────────────────────────────────────
+.tmp-*
+*.tmp
 
 # === ⛔ 內部資料 — 絕對禁止 commit 到 public repo（2026-06-05 Shawn 拍板） ===
 # 這些是科福內部 know-how / 客戶簽核紀錄 / 踩坑經驗，
@@ -43,3 +78,6 @@ memory/
 phase-*-completion.md
 HANDOFF.md
 CLAUDE.md
+AGENTS.md
+CODEX_TASK_OPEN_SPEC_V2.md
+ROADMAP.md

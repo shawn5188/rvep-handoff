@@ -125,15 +125,53 @@ export function Joystick({ onChange, onRelease, disabled = false }: Props) {
       }
       onPointerUp={disabled ? undefined : end}
       onPointerCancel={disabled ? undefined : end}
-      className={`relative w-28 h-28 rounded-full surface touch-none select-none ${
-        disabled
-          ? "cursor-not-allowed opacity-40 grayscale"
-          : "cursor-grab active:cursor-grabbing"
-      }`}
+      className={`
+        relative w-32 h-32 rounded-full touch-none select-none
+        border-2 backdrop-blur-md
+        transition-colors
+        ${
+          disabled
+            ? "cursor-not-allowed border-white/15 bg-black/30 opacity-60"
+            : active
+              ? "border-white/60 bg-black/45 cursor-grabbing shadow-[0_0_30px_rgba(255,255,255,0.25)]"
+              : "border-white/35 bg-black/35 cursor-grab"
+        }
+      `}
       aria-label="搖桿"
     >
+      {/* Center cross — DJI 風視覺錨點，永遠可見讓使用者知道中心在哪 */}
+      <svg
+        aria-hidden
+        viewBox="0 0 100 100"
+        className="absolute inset-0 w-full h-full pointer-events-none"
+      >
+        {/* Inner dead-zone ring (faint) */}
+        <circle
+          cx="50"
+          cy="50"
+          r={(DEAD_ZONE / RADIUS) * 45}
+          fill="none"
+          stroke="rgba(255,255,255,0.12)"
+          strokeWidth="1"
+          strokeDasharray="2 2"
+        />
+        {/* Center cross */}
+        <line x1="50" y1="38" x2="50" y2="62" stroke="rgba(255,255,255,0.35)" strokeWidth="1" strokeLinecap="round" />
+        <line x1="38" y1="50" x2="62" y2="50" stroke="rgba(255,255,255,0.35)" strokeWidth="1" strokeLinecap="round" />
+        {/* Center dot */}
+        <circle cx="50" cy="50" r="1.6" fill="rgba(255,255,255,0.6)" />
+      </svg>
+
+      {/* Knob */}
       <div
-        className={`absolute rounded-full bg-white/20 border border-white/30 transition-shadow ${active ? "shadow-[0_0_20px_rgba(255,255,255,0.3)]" : ""}`}
+        className={`
+          absolute rounded-full transition-shadow
+          ${
+            active
+              ? "bg-white/85 shadow-[0_0_22px_rgba(255,255,255,0.55)]"
+              : "bg-white/55 border border-white/40"
+          }
+        `}
         style={{
           width: KNOB_R * 2,
           height: KNOB_R * 2,

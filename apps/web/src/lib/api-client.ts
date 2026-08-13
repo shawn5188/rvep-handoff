@@ -158,6 +158,8 @@ export async function logout(): Promise<void> {
 
 export interface MeResponse {
   userId: string;
+  email: string | null;
+  displayName: string | null;
   role: "ADMIN" | "OPERATOR" | "VIEWER";
   vehiclePermissions: Array<{ vehicleId: string; role: "ADMIN" | "OPERATOR" | "VIEWER" }>;
 }
@@ -254,6 +256,543 @@ export function listDatasets(vehicleId?: string, limit = 100): Promise<DatasetAs
   if (vehicleId) params.set("vehicleId", vehicleId);
   params.set("limit", String(limit));
   return request<DatasetAsset[]>("GET", `/api/v1/datasets?${params.toString()}`);
+}
+
+// ---------------------------------------------------------------------------
+// Admin (c15) — all endpoints require role=ADMIN, otherwise 403 admin_required
+// ---------------------------------------------------------------------------
+
+export interface AdminAuditEvent {
+  id: string;
+  ts: string;
+  eventName: string;
+  actorId: string | null;
+  targetType: string | null;
+  targetId: string | null;
+  payload: Record<string, unknown> | null;
+}
+
+export interface AdminDashboard {
+  vehicleCount: number;
+  userCount: number;
+  recentAuditCount: number;
+  recentEvents: AdminAuditEvent[];
+}
+
+export function getAdminDashboard(): Promise<AdminDashboard> {
+  return request<AdminDashboard>("GET", "/api/v1/admin/dashboard");
+}
+
+// ---------------------------------------------------------------------------
+// Admin (c15 P3) — vehicle CRUD + adapter registry + token / deploy package
+// ---------------------------------------------------------------------------
+
+export type VehicleTypeName =
+  | "QUADRUPED"
+  | "WHEELED"
+  | "WHEELED_QUADRUPED"
+  | "RC_CAR"
+  | "DRONE"
+  | "CUSTOM";
+
+export interface AdminVehicle {
+  id: string;
+  vehicleId: string;
+  displayName: string;
+  vehicleType: VehicleTypeName;
+  adapterType: string;
+  platformId: string;
+  cameraProfileId: string;
+  audioProfileId: string;
+  status: string;
+  vendor: string | null;
+  serialNumber: string | null;
+  declaredCapabilities: string[];
+  observedCapabilities: string[];
+  maxLinearMs: number;
+  maxAngularRads: number;
+  createdBy: string | null;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  activeSessionCount: number;
+  hasActiveLease: boolean;
+  lastSeenAt: string | null;
+}
+
+export interface AdminVehicleDetail extends Omit<AdminVehicle, "activeSessionCount" | "hasActiveLease" | "lastSeenAt"> {
+  createdByEmail: string | null;
+  recentLeases: Array<{
+    id: string;
+    operatorEmail: string;
+    status: string;
+    createdAt: string;
+    expiresAt: string;
+    releasedAt: string | null;
+    revokedAt: string | null;
+  }>;
+  recentSessions: Array<{
+    sessionId: string;
+    userEmail: string;
+    purpose: string;
+    status: string;
+    createdAt: string;
+    closedAt: string | null;
+  }>;
+}
+
+export interface CreateVehicleInput {
+  vehicleId: string;
+  displayName: string;
+  vehicleType: VehicleTypeName;
+  adapterType: string;
+  platformId: string;
+  cameraProfileId: string;
+  audioProfileId: string;
+  vendor?: string;
+  serialNumber?: string;
+  declaredCapabilities?: string[];
+  maxLinearMs?: number;
+  maxAngularRads?: number;
+}
+
+export type UpdateVehicleInput = Partial<{
+  displayName: string;
+  vehicleType: VehicleTypeName;
+  adapterType: string;
+  platformId: string;
+  cameraProfileId: string;
+  audioProfileId: string;
+  vendor: string | null;
+  serialNumber: string | null;
+  declaredCapabilities: string[];
+  observedCapabilities: string[];
+  maxLinearMs: number;
+  maxAngularRads: number;
+}>;
+
+export interface AdapterTypeInfo {
+  id: string;
+  displayName: string;
+  description: string;
+  defaultCapabilities: string[];
+  vehicleTypes: VehicleTypeName[];
+}
+
+export interface AdapterTypesResponse {
+  adapterTypes: AdapterTypeInfo[];
+  allCapabilities: string[];
+}
+
+export interface MintedVehicleToken {
+  token: string;
+  expiresAt: string;
+  roomName: string;
+  identity: string;
+  url: string;
+}
+
+export function adminListVehicles(includeArchived = false): Promise<AdminVehicle[]> {
+  const qs = includeArchived ? "?includeArchived=1" : "";
+  return request<AdminVehicle[]>("GET", `/api/v1/admin/vehicles${qs}`);
+}
+
+export function adminCreateVehicle(input: CreateVehicleInput): Promise<AdminVehicle> {
+  return request<AdminVehicle>("POST", "/api/v1/admin/vehicles", input);
+}
+
+export function adminGetVehicle(id: string): Promise<AdminVehicleDetail> {
+  return request<AdminVehicleDetail>(
+    "GET",
+    `/api/v1/admin/vehicles/${encodeURIComponent(id)}`,
+  );
+}
+
+export function adminUpdateVehicle(
+  id: string,
+  patch: UpdateVehicleInput,
+): Promise<AdminVehicleDetail> {
+  return request<AdminVehicleDetail>(
+    "PATCH",
+    `/api/v1/admin/vehicles/${encodeURIComponent(id)}`,
+    patch,
+  );
+}
+
+export function adminArchiveVehicle(id: string): Promise<AdminVehicleDetail> {
+  return request<AdminVehicleDetail>(
+    "DELETE",
+    `/api/v1/admin/vehicles/${encodeURIComponent(id)}`,
+  );
+}
+
+export function adminMintVehicleToken(
+  id: string,
+  opts: { ttlSeconds?: number; identity?: string } = {},
+): Promise<MintedVehicleToken> {
+  return request<MintedVehicleToken>(
+    "POST",
+    `/api/v1/admin/vehicles/${encodeURIComponent(id)}/token`,
+    opts,
+  );
+}
+
+/**
+ * Download the deploy package (tar.gz) as a Blob — caller triggers the save
+ * via URL.createObjectURL. Uses a raw fetch because the shared request()
+ * helper is JSON-only.
+ */
+export async function adminDownloadDeployPackage(id: string): Promise<Blob> {
+  const path = `/api/v1/admin/vehicles/${encodeURIComponent(id)}/deploy-package`;
+
+  const doFetch = () =>
+    fetch(`${API_BASE}${path}`, {
+      credentials: "include",
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    });
+
+  let res = await doFetch();
+  if (res.status === 401 && (await refresh())) {
+    res = await doFetch();
+  }
+  if (!res.ok) {
+    const json = (await res.json().catch(() => ({}))) as ApiResponse<never>;
+    throw new ApiError(json.error ?? `http_${res.status}`, res.status, json);
+  }
+  return res.blob();
+}
+
+export function adminListAdapterTypes(): Promise<AdapterTypesResponse> {
+  return request<AdapterTypesResponse>("GET", "/api/v1/admin/adapter-types");
+}
+
+// ---------------------------------------------------------------------------
+// Admin (c15 P4) — user CRUD + password / invite management
+// ---------------------------------------------------------------------------
+
+export type RoleName = "ADMIN" | "OPERATOR" | "VIEWER";
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  displayName: string | null;
+  role: RoleName;
+  invitePending: boolean;
+  inviteExpiresAt: string | null;
+  twoFactorEnabled: boolean;
+  failedLoginCount: number;
+  lockedUntil: string | null;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  activePermissionCount: number;
+  lastLoginAt: string | null;
+}
+
+export interface AdminUserDetail extends AdminUser {
+  permissions: Array<{
+    vehicleId: string;
+    vehicleDisplayName: string;
+    role: RoleName;
+    priorityOverride: number | null;
+    grantedBy: string | null;
+  }>;
+  recentAuditEvents: Array<{
+    id: string;
+    ts: string;
+    eventName: string;
+    targetType: string | null;
+    targetId: string | null;
+    payload: Record<string, unknown> | null;
+  }>;
+}
+
+export interface CreateUserInput {
+  email: string;
+  displayName: string;
+  role: RoleName;
+  inviteMethod: "email" | "manual_password";
+  manualPassword?: string;
+  copyPermissionsFromUserId?: string;
+}
+
+/** Credentials are one-shot — only present on the create response. */
+export interface CreateUserResult extends AdminUser {
+  userId: string;
+  inviteLink?: string;
+  temporaryPassword?: string;
+  warning?: "admin_role_granted";
+}
+
+export type UpdateUserInput = Partial<{
+  email: string;
+  displayName: string;
+  role: RoleName;
+  /** null = restore an archived user (archiving goes through adminArchiveUser). */
+  archivedAt: null;
+}>;
+
+export interface ResetPasswordResult {
+  userId: string;
+  email: string;
+  inviteLink?: string;
+  temporaryPassword?: string;
+}
+
+export interface ResendInviteResult {
+  userId: string;
+  email: string;
+  inviteLink: string;
+  inviteExpiresAt: string;
+}
+
+export function adminListUsers(
+  opts: { includeArchived?: boolean; role?: RoleName } = {},
+): Promise<AdminUser[]> {
+  const params = new URLSearchParams();
+  if (opts.includeArchived) params.set("includeArchived", "1");
+  if (opts.role) params.set("role", opts.role);
+  const qs = params.toString();
+  return request<AdminUser[]>("GET", `/api/v1/admin/users${qs ? `?${qs}` : ""}`);
+}
+
+export function adminCreateUser(input: CreateUserInput): Promise<CreateUserResult> {
+  return request<CreateUserResult>("POST", "/api/v1/admin/users", input);
+}
+
+export function adminGetUser(id: string): Promise<AdminUserDetail> {
+  return request<AdminUserDetail>(
+    "GET",
+    `/api/v1/admin/users/${encodeURIComponent(id)}`,
+  );
+}
+
+export function adminUpdateUser(
+  id: string,
+  patch: UpdateUserInput,
+): Promise<AdminUser> {
+  return request<AdminUser>(
+    "PATCH",
+    `/api/v1/admin/users/${encodeURIComponent(id)}`,
+    patch,
+  );
+}
+
+export function adminArchiveUser(id: string): Promise<AdminUser> {
+  return request<AdminUser>(
+    "DELETE",
+    `/api/v1/admin/users/${encodeURIComponent(id)}`,
+  );
+}
+
+export function adminResetUserPassword(
+  id: string,
+  opts: { method: "invite_link" | "manual"; manualPassword?: string },
+): Promise<ResetPasswordResult> {
+  return request<ResetPasswordResult>(
+    "POST",
+    `/api/v1/admin/users/${encodeURIComponent(id)}/reset-password`,
+    opts,
+  );
+}
+
+export function adminResendInvite(id: string): Promise<ResendInviteResult> {
+  return request<ResendInviteResult>(
+    "POST",
+    `/api/v1/admin/users/${encodeURIComponent(id)}/resend-invite`,
+  );
+}
+
+/** Public endpoint — the invited user is not authenticated yet. */
+export function acceptInvite(input: {
+  inviteToken: string;
+  newPassword: string;
+}): Promise<{ email: string }> {
+  return request<{ email: string }>("POST", "/api/v1/auth/accept-invite", input);
+}
+
+// ---------------------------------------------------------------------------
+// Admin (c15 P5) — permission matrix (user × vehicle × role × priority)
+// NOTE: vehicleId in these shapes is the internal Vehicle UUID (matches the
+// PUT input + VehiclePermission FK); vehicleExternalId is the machine id
+// (e.g. "amr-01") for display.
+// ---------------------------------------------------------------------------
+
+export interface AdminPermissionEntry {
+  vehicleId: string;
+  vehicleExternalId: string;
+  vehicleDisplayName: string;
+  vehicleStatus: string;
+  role: RoleName;
+  priorityOverride: number | null;
+  grantedBy: string | null;
+  grantedByEmail: string | null;
+  updatedAt: string;
+}
+
+export interface AdminAvailableVehicle {
+  vehicleId: string;
+  vehicleExternalId: string;
+  displayName: string;
+  vehicleType: string;
+  status: string;
+}
+
+export interface AdminUserPermissions {
+  userId: string;
+  userEmail: string;
+  userDisplayName: string | null;
+  userRole: RoleName;
+  permissions: AdminPermissionEntry[];
+  /** Non-archived vehicles the user has no permission for yet (add flow). */
+  availableVehicles: AdminAvailableVehicle[];
+}
+
+/** One entry of the PUT full-replace array. */
+export interface PermissionWrite {
+  vehicleId: string;
+  role: RoleName;
+  /** null / omitted = role default (ADMIN 100 / OPERATOR 50 / VIEWER 0). */
+  priorityOverride?: number | null;
+}
+
+export interface AdminMatrixUser {
+  userId: string;
+  email: string;
+  displayName: string | null;
+  role: RoleName;
+}
+
+export interface AdminMatrixPermission {
+  userId: string;
+  vehicleId: string;
+  role: RoleName;
+  priorityOverride: number | null;
+  grantedBy: string | null;
+}
+
+export interface AdminPermissionMatrix {
+  users: AdminMatrixUser[];
+  vehicles: AdminAvailableVehicle[];
+  permissions: AdminMatrixPermission[];
+  totalUsers: number;
+  limit: number;
+  offset: number;
+}
+
+export function adminGetUserPermissions(userId: string): Promise<AdminUserPermissions> {
+  return request<AdminUserPermissions>(
+    "GET",
+    `/api/v1/admin/permissions?userId=${encodeURIComponent(userId)}`,
+  );
+}
+
+/** Full replace of one user's permissions (atomic on the backend). */
+export function adminPutUserPermissions(
+  userId: string,
+  permissions: PermissionWrite[],
+): Promise<AdminUserPermissions> {
+  return request<AdminUserPermissions>("PUT", "/api/v1/admin/permissions", {
+    userId,
+    permissions,
+  });
+}
+
+export function adminGetPermissionMatrix(
+  opts: { limit?: number; offset?: number } = {},
+): Promise<AdminPermissionMatrix> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  if (opts.offset !== undefined) params.set("offset", String(opts.offset));
+  const qs = params.toString();
+  return request<AdminPermissionMatrix>(
+    "GET",
+    `/api/v1/admin/permissions/matrix${qs ? `?${qs}` : ""}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Admin (c15 P6) — audit log viewer + CSV export
+// ---------------------------------------------------------------------------
+
+export type AuditImportance = "red" | "orange" | "default";
+export type AuditCategory = "AUDIT" | "TELEMETRY" | "SYSTEM";
+
+export interface AdminAuditEventDetail {
+  id: string;
+  ts: string;
+  category: AuditCategory | null;
+  eventName: string;
+  actorId: string | null;
+  actorEmail: string | null;
+  targetType: string | null;
+  targetId: string | null;
+  targetLabel: string | null;
+  payload: Record<string, unknown> | null;
+  tenantId: string | null;
+  importance: AuditImportance;
+}
+
+export interface AdminAuditQuery {
+  since?: string; // ISO datetime
+  until?: string;
+  eventName?: string[]; // sent comma-separated
+  category?: AuditCategory;
+  actorId?: string;
+  targetType?: string;
+  targetId?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface AdminAuditPage {
+  events: AdminAuditEventDetail[];
+  nextCursor: string | null;
+}
+
+function auditQueryString(q: AdminAuditQuery): string {
+  const params = new URLSearchParams();
+  if (q.since) params.set("since", q.since);
+  if (q.until) params.set("until", q.until);
+  if (q.eventName && q.eventName.length > 0) params.set("eventName", q.eventName.join(","));
+  if (q.category) params.set("category", q.category);
+  if (q.actorId) params.set("actorId", q.actorId);
+  if (q.targetType) params.set("targetType", q.targetType);
+  if (q.targetId) params.set("targetId", q.targetId);
+  if (q.limit !== undefined) params.set("limit", String(q.limit));
+  if (q.cursor) params.set("cursor", q.cursor);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export function adminListAudit(q: AdminAuditQuery = {}): Promise<AdminAuditPage> {
+  return request<AdminAuditPage>("GET", `/api/v1/admin/audit${auditQueryString(q)}`);
+}
+
+/**
+ * CSV export as a Blob — caller triggers the save via URL.createObjectURL.
+ * Raw fetch because the shared request() helper is JSON-only.
+ * Server hard-caps at 10,000 rows (400 export_too_large beyond).
+ */
+export async function adminExportAuditCsv(q: AdminAuditQuery = {}): Promise<Blob> {
+  const { limit: _limit, cursor: _cursor, ...filters } = q;
+  const path = `/api/v1/admin/audit/export${auditQueryString(filters)}`;
+
+  const doFetch = () =>
+    fetch(`${API_BASE}${path}`, {
+      credentials: "include",
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    });
+
+  let res = await doFetch();
+  if (res.status === 401 && (await refresh())) {
+    res = await doFetch();
+  }
+  if (!res.ok) {
+    const json = (await res.json().catch(() => ({}))) as ApiResponse<never>;
+    throw new ApiError(json.error ?? `http_${res.status}`, res.status, json);
+  }
+  return res.blob();
 }
 
 // ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import {
   type EmergencyStopCommand,
   type HeartbeatMessage,
   type ResumeControlCommand,
+  type JoyCommand,
 } from "@rvep/shared";
 
 /**
@@ -152,6 +153,24 @@ export class ControlChannel {
       acknowledgement: "operator_confirmed",
     };
     return this.publish(cmd, /* reliable */ true);
+  }
+
+  /**
+   * Send raw gamepad state as JoyCommand to r2-bridge.
+   * The bridge republishes it as sensor_msgs/Joy → teleop_twist_joy → /cmd_vel.
+   *
+   * joy should already have deadzone applied by useGamepad hook.
+   * Uses unreliable channel per 20 Hz timing requirement (same as sendMovement).
+   *
+   * Spec: openspec/features/contract-c1-c8/c12-joystick-support.md §Schema
+   */
+  sendJoy(joy: JoyCommand["joy"]): Promise<void> {
+    const cmd: JoyCommand = {
+      type: "joy",
+      ...this.envelope(),
+      joy,
+    };
+    return this.publish(cmd, /* reliable */ false);
   }
 
   private sendHeartbeat(): Promise<void> {

@@ -4,6 +4,7 @@ import {
   useCockpitStore,
   type Brightness,
 } from "@/lib/stores/cockpit-store";
+import { useHydrated } from "@/lib/hooks/useHydrated";
 
 const OPTIONS: { id: Brightness; label: string; glyph: string; hint: string }[] = [
   { id: "auto", label: "Auto", glyph: "◐", hint: "依環境光自動調整" },
@@ -13,10 +14,13 @@ const OPTIONS: { id: Brightness; label: string; glyph: string; hint: string }[] 
 
 /** Cycles brightness profile on each click. */
 export function BrightnessToggle() {
+  const hydrated = useHydrated();
   const brightness = useCockpitStore((s) => s.brightness);
   const setBrightness = useCockpitStore((s) => s.setBrightness);
+  // Use SSR-stable default until Zustand persist rehydrates from localStorage.
+  const safeBrightness: Brightness = hydrated ? brightness : "auto";
 
-  const idx = OPTIONS.findIndex((o) => o.id === brightness);
+  const idx = OPTIONS.findIndex((o) => o.id === safeBrightness);
   const current = OPTIONS[Math.max(0, idx)];
 
   return (

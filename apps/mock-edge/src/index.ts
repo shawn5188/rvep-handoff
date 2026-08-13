@@ -231,6 +231,28 @@ function handleCommand(cmd: ControlCommand) {
       console.log(`[cmd] movement fwd=${cmd.axes.forward.toFixed(2)} yaw=${cmd.axes.yaw.toFixed(2)}`);
       break;
 
+    case "joy": {
+      // c12 — operator gamepad raw axes + buttons (per sensor_msgs/Joy).
+      // In r2-bridge: republish to /joy topic; teleop_twist_joy does mapping.
+      // In mock-edge: derive forward/lateral/yaw from standard layout for demo log.
+      if (state.safeMode) {
+        return;
+      }
+      const ax = cmd.joy.axes;
+      // Web Gamepad standard: axes[0]=LX (lateral), axes[1]=LY (forward, up=-1),
+      // axes[2]=RX (yaw)
+      const forward = -(ax[1] ?? 0);
+      const lateral = ax[0] ?? 0;
+      const yaw = -(ax[2] ?? 0);
+      // Throttle log so it doesn't spam at 20 Hz
+      if ((state.lastAcceptedSeq ?? 0) % 10 === 1) {
+        console.log(
+          `[cmd] joy fwd=${forward.toFixed(2)} lat=${lateral.toFixed(2)} yaw=${yaw.toFixed(2)} btns=[${cmd.joy.buttons.join("")}]`,
+        );
+      }
+      break;
+    }
+
     case "action":
       if (state.safeMode) {
         console.warn(`[blocked] action ${cmd.action} while safe_mode`);
@@ -356,7 +378,9 @@ async function main() {
 
   startHeartbeatWatcher();
 
-  await room.connect(LIVEKIT_URL, token, { autoSubscribe: true, dynacast: false });
+  // autoSubscribe: false — mock-edge is receiver-side simulator, doesn't need video.
+  // Avoids NVDEC HW decoder crash (error 100) when LiveKit native tries to decode video.
+  await room.connect(LIVEKIT_URL, token, { autoSubscribe: false, dynacast: false });
 
   // @livekit/rtc-node v0.13 does NOT fire RoomEvent.Connected after connect()
   // resolves — set activeRoom + emit "edge_online" + initial safe_mode broadcast

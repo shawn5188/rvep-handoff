@@ -35,7 +35,7 @@ import rclpy
 from livekit import rtc
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Imu
+from sensor_msgs.msg import Imu, Joy
 from std_msgs.msg import Float32
 
 from .vehicle_adapter import VehicleAdapter, WheeltecAMRAdapter
@@ -95,6 +95,13 @@ class RosPublisher(Node):
         # without touching this class.
         self.adapter = adapter
         self.adapter.init_publishers(self)
+
+        # ── Joy publisher (C12 — Xbox 360 / gamepad support) ─────────────────
+        # Publishes sensor_msgs/Joy so teleop_twist_joy can map axes → /cmd_vel.
+        # QoS depth 10 RELIABLE per joystick-gates.md §Heartbeat Watchdog.
+        from rclpy.qos import QoSProfile, ReliabilityPolicy
+        joy_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        self._joy_pub = self.create_publisher(Joy, "/joy", joy_qos)
 
         # ── Telemetry subscribers — cache latest sample per source ────────
         # Latest /odom_combined (Wheeltec emits this — covers velocity + pose)
@@ -222,6 +229,21 @@ class RosPublisher(Node):
         motor topics."""
         self.adapter.publish_emergency_stop()
 
+    def publish_joy(self, axes: list[float], buttons: list[int]) -> None:
+        """Republish raw gamepad state as sensor_msgs/Joy.
+
+        teleop_twist_joy subscribes to /joy and maps axes → /cmd_vel per the
+        YAML config in apps/r2-bridge/config/joy_mapping_xbox360.yaml.
+
+        Spec: openspec/features/contract-c1-c8/c12-joystick-support.md §r2-bridge
+        """
+        msg = Joy()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "joy"
+        msg.axes = [float(v) for v in axes]
+        msg.buttons = [int(v) for v in buttons]
+        self._joy_pub.publish(msg)
+
 
 class Watchdog:
     """Trip emergency_stop when operator heartbeat goes silent."""
@@ -329,6 +351,20 @@ async def main() -> int:
         )
 
     watchdog = Watchdog(HEARTBEAT_TIMEOUT_S, on_timeout=trigger_stop)
+
+    # Joy heartbeat watchdog — separate from operator heartbeat.
+    # Per joystick-gates.md Gate 4: 100 ms timeout (much tighter than 3 s
+    # movement watchdog; teleop is real-time). Fires emergency_stop + safety
+    # event on timeout.
+    JOY_WATCHDOG_TIMEOUT_S = float(os.environ.get("JOY_HEARTBEAT_TIMEOUT_S", "0.1"))
+
+    async def on_joy_timeout() -> None:
+        log.warning("joy watchdog: no joy frame for %.0f ms → stop", JOY_WATCHDOG_TIMEOUT_S * 1000)
+        pub.publish_stop()
+        await publish_safety("safe_mode_entered", reason="joystick_heartbeat_timeout")
+
+    joy_watchdog: Watchdog | None = None  # created lazily on first joy frame
+
     nonlocal_state: dict[str, int] = {}
 
     @room.on("data_received")
@@ -354,6 +390,32 @@ async def main() -> int:
             if nonlocal_state["mv_count"] % 10 == 1:
                 log.info("movement #%d fwd=%.2f lat=%.2f yaw=%.2f",
                          nonlocal_state["mv_count"], fwd, lat, yaw)
+            return
+        if kind == "joy":
+            nonlocal joy_watchdog
+            # Beat joy-specific watchdog (Gate 4 — 100 ms timeout).
+            # Create lazily on first joy frame; subsequent frames just beat it.
+            if joy_watchdog is None:
+                joy_watchdog = Watchdog(
+                    JOY_WATCHDOG_TIMEOUT_S,
+                    on_timeout=lambda: asyncio.create_task(on_joy_timeout()),
+                )
+                joy_watchdog.start()
+                log.info("joy watchdog started (timeout=%.0f ms)",
+                         JOY_WATCHDOG_TIMEOUT_S * 1000)
+            joy_watchdog.beat()
+            # Decode joy payload and publish sensor_msgs/Joy → teleop_twist_joy
+            joy_payload = cmd.get("joy") or {}
+            joy_axes: list[float] = [float(v) for v in joy_payload.get("axes", [])]
+            joy_buttons: list[int] = [int(v) for v in joy_payload.get("buttons", [])]
+            pub.publish_joy(joy_axes, joy_buttons)
+            # Debug log every ~20th frame (20 Hz → ~1/s)
+            nonlocal_state["joy_count"] = nonlocal_state.get("joy_count", 0) + 1
+            if nonlocal_state["joy_count"] % 20 == 1:
+                log.info("joy #%d axes=%s buttons=%s",
+                         nonlocal_state["joy_count"],
+                         [f"{v:.2f}" for v in joy_axes[:6]],
+                         joy_buttons[:8])
             return
         if kind == "emergency_stop":
             log.info("operator emergency_stop seq=%s", cmd.get("seq"))

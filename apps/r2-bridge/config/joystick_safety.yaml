@@ -1,0 +1,56 @@
+# Joystick Safety Gate configuration
+#
+# This file documents all 6 safety gates per openspec/safety/joystick-gates.md.
+# Implementation split:
+#   Web (useGamepad hook)  — Gates 1 (dead-man UI), 2 (cruise UI), 3 (deadzone),
+#                            5 (debounce), 6 (stuck detect)
+#   r2-bridge (main.py)   — Gate 4 (joy heartbeat watchdog, 100 ms)
+#   teleop_twist_joy       — Gate 1 (enable_button) re-enforced at ROS layer
+#
+# Spec: openspec/safety/joystick-gates.md
+#       openspec/features/contract-c1-c8/c12-joystick-support.md
+
+joystick_safety:
+
+  # Gate 1 — Dead-Man-Switch
+  dead_man_switch:
+    enabled: true
+    button_index: 4           # LB (Xbox 360 layout)
+    # Implemented in: useGamepad hook (DEAD_MAN_BUTTON=4) + teleop_twist_joy enable_button
+
+  # Gate 2 — Cruise Mode (relieves operator fatigue for long sessions)
+  cruise_mode:
+    enabled: true
+    trigger_button: 5         # RB (Xbox 360 layout)
+    trigger_hold_ms: 5000     # hold RB 5 s to activate
+    auto_release_s: 30        # auto-expire cruise after 30 s
+    # Implemented in: useGamepad hook (cruiseEnteredAtRef + CRUISE_TIMEOUT_MS)
+    # Disable by setting enabled: false and removing enable_turbo_button from
+    # joy_mapping_xbox360.yaml (forces pure dead-man only).
+
+  # Gate 3 — Deadzone Filter
+  deadzone:
+    default: 0.15             # 15% — prevents stick drift on worn Xbox 360 pots
+    per_axis:
+      "2": 0.05               # LT (trigger — tighter, less resistance)
+      "5": 0.05               # RT
+    # Implemented in: useGamepad hook (DEAD_ZONE=0.15, applied per-axis before sendJoy)
+
+  # Gate 4 — Heartbeat Watchdog (joy-specific, 100 ms)
+  heartbeat:
+    timeout_ms: 100           # much stricter than 3 s movement watchdog
+    # Implemented in: r2-bridge main.py joy_watchdog (JOY_HEARTBEAT_TIMEOUT_S env)
+    # Override via env: JOY_HEARTBEAT_TIMEOUT_S=0.1 (seconds, float)
+
+  # Gate 5 — Button Debounce
+  button_debounce:
+    ms: 5                     # ignore re-press within 5 ms (electrical bounce)
+    # Implemented in: useGamepad hook (DEBOUNCE_MS=5, rising-edge guard)
+
+  # Gate 6 — Stuck Frame Detection
+  stuck_detection:
+    consecutive_frames: 5     # 5 identical frames = 250 ms at 20 Hz → safe mode
+    enabled: true
+    # Implemented in: useGamepad hook (STUCK_FRAMES=5, stuckCountRef)
+    # On detection: web sends emergency_stop + enters safe_mode (requires
+    # operator resume_control + LB press to recover).

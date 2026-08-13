@@ -64,7 +64,9 @@ export async function POST(request: NextRequest) {
     });
 
     // Constant-time response: same error for unknown email vs wrong password.
-    if (!user) {
+    // Archived (soft-deleted, c15 P4) users are indistinguishable from
+    // unknown ones — archive must actually revoke access.
+    if (!user || user.archivedAt !== null) {
       return fail("invalid_credentials", 401);
     }
 

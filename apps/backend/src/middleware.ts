@@ -7,6 +7,7 @@ import { verifyAccessToken } from "@/lib/auth";
  * Public paths (no token required):
  *   - POST /api/v1/auth/login
  *   - POST /api/v1/auth/refresh
+ *   - POST /api/v1/auth/accept-invite  (c15 P4 — invited user has no JWT yet)
  *
  * For protected paths:
  *   1. Extract Bearer token from Authorization header.
@@ -18,6 +19,7 @@ import { verifyAccessToken } from "@/lib/auth";
 const PUBLIC_PATHS = new Set([
   "/api/v1/auth/login",
   "/api/v1/auth/refresh",
+  "/api/v1/auth/accept-invite",
 ]);
 
 // Internal endpoints authenticate via x-internal-token, not user JWT.

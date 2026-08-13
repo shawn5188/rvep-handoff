@@ -1,0 +1,29 @@
+# LiveKit server — minimal development configuration.
+# Secrets are injected via environment variables in docker-compose.dev.yml.
+
+port: 7880
+bind_addresses:
+  - ""
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100        # narrow range matching docker port mapping
+  use_external_ip: false
+  # Announce the LAN-reachable IP for ICE candidates so LAN browsers can connect.
+  node_ip: 192.168.68.68
+
+keys:
+  # api_key: api_secret pairs — values come from env substitution below.
+  # Docker Compose passes LIVEKIT_API_KEY / LIVEKIT_API_SECRET as env vars;
+  # livekit-server reads them via the `keys` map syntax:
+  # key: <LIVEKIT_API_KEY> → secret: <LIVEKIT_API_SECRET>
+  # Note: livekit-server supports env-var expansion in this file.
+  devkey: devsecret
+
+logging:
+  level: info
+
+# TURN / ICE configuration (coturn runs separately on the same Docker network)
+turn:
+  enabled: false

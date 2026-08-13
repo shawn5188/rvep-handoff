@@ -9,12 +9,12 @@ import {
   DatasetAsset,
   Vehicle,
 } from "@/lib/api-client";
-import { Brand } from "@/components/ui/Brand";
-import { Button } from "@/components/ui/Button";
 
 /**
  * Phase 1 dataset asset list — every metadata.jsonl / video chunk an Edge
  * Agent reports via /api/v1/internal/dataset-asset shows up here.
+ * Rendered inside the c15 P2 admin shell (app/admin/layout.tsx) which
+ * provides sidebar / breadcrumb / user menu — no page-level header needed.
  */
 export default function DatasetsPage() {
   const router = useRouter();
@@ -57,14 +57,7 @@ export default function DatasetsPage() {
   }, [filter, router]);
 
   return (
-    <main className="min-h-screen max-w-6xl mx-auto p-6 sm:p-10">
-      <header className="flex items-center justify-between mb-8">
-        <Brand size="md" />
-        <Button variant="ghost" size="sm" onClick={() => router.push("/vehicles")}>
-          ← 回 Fleet
-        </Button>
-      </header>
-
+    <div className="max-w-6xl mx-auto">
       <section className="mb-6">
         <h1 className="text-3xl font-semibold tracking-tight">Dataset 資料</h1>
         <p className="mt-2 text-sm text-neutral-400">
@@ -156,7 +149,7 @@ export default function DatasetsPage() {
           </table>
         </div>
       )}
-    </main>
+    </div>
   );
 }
 
