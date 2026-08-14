@@ -62,6 +62,12 @@ if [ ! -S "$SOCK" ]; then
   exit 2
 fi
 
+# lk CLI honors LIVEKIT_TOKEN env var over --api-key/--api-secret; if this
+# script is sourced alongside r2-bridge's env (e.g. manual debug), the bridge
+# JWT would leak in and camera would try to join with the wrong identity.
+# (cherry-picked from gluttonyOwO@bf761fef)
+unset LIVEKIT_TOKEN
+
 # Pipeline 2: lk reads from UNIX socket, publishes to LiveKit room
 exec lk room join \
   --url "$LIVEKIT_URL" \
